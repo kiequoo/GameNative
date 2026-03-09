@@ -9,7 +9,6 @@ import app.gamenative.data.SteamApp
 import app.gamenative.enums.Marker
 import app.gamenative.enums.SpecialGameSaveMapping
 import app.gamenative.service.SteamService
-import app.gamenative.service.SteamService.Companion.getAppDirName
 import app.gamenative.service.SteamService.Companion.getAppInfoOf
 import com.winlator.container.Container
 import com.winlator.core.TarCompressorUtils
@@ -358,9 +357,10 @@ object SteamUtils {
     }
 
     internal fun writeColdClientIni(steamAppId: Int, container: Container) {
-        val gameName = getAppDirName(getAppInfoOf(steamAppId))
+        val gameName = File(SteamService.getAppDirPath(steamAppId)).name
         val executablePath = container.executablePath.replace("/", "\\")
         val exePath = "steamapps\\common\\$gameName\\$executablePath"
+        val exeRunDir = "steamapps\\common\\$gameName"
         val exeCommandLine = container.execArgs
         val iniFile = File(container.getRootDir(), ".wine/drive_c/Program Files (x86)/Steam/ColdClientLoader.ini")
         iniFile.parentFile?.mkdirs()
@@ -384,7 +384,7 @@ object SteamUtils {
                 [SteamClient]
 
                 Exe=$exePath
-                ExeRunDir=
+                ExeRunDir=$exeRunDir
                 ExeCommandLine=$exeCommandLine
                 AppId=$steamAppId
 
