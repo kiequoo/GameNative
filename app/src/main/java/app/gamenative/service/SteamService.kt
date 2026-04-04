@@ -2345,7 +2345,10 @@ class SteamService : Service(), IChallengeUrlChanged {
                 }
             }
 
-            forceSyncUserFiles(appId = appId, prefixToPath = prefixToPath, preferredSave = preferredSave).await()
+            val result = forceSyncUserFiles(appId = appId, prefixToPath = prefixToPath, preferredSave = preferredSave).await()
+            if (result.syncResult == SyncResult.InProgress) {
+                PluviaApp.events.emit(AndroidEvent.CloudSaveSynced(appId, success = false))
+            }
         }
 
         /**
