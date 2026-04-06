@@ -8,6 +8,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
@@ -264,7 +265,8 @@ class EpicAppScreen : BaseAppScreen() {
             gameName = gameNameForCompatibility,
         )
 
-        val hasCloudSaves = game?.cloudSaveEnabled
+        val isLocalSavesOnly = ContainerUtils.isLocalSavesOnly(context, libraryItem.appId)
+        val hasCloudSaves = (game?.cloudSaveEnabled ?: false) && !isLocalSavesOnly
 
         val syncStateText = remember(gameId) { mutableStateOf<String?>(null) }
         val cloudSaveStatus = remember(gameId) { mutableStateOf<CloudSaveStatus?>(null) }
@@ -272,7 +274,7 @@ class EpicAppScreen : BaseAppScreen() {
         val conflictRemoteTimestamp = remember(gameId) { mutableStateOf<Long?>(null) }
 
         // Re-run cloud check whenever network availability changes
-        val cloudConnectivityVersion = remember { mutableStateOf(0) }
+        val cloudConnectivityVersion = remember { mutableIntStateOf(0) }
         DisposableEffect(gameId) {
             val onNetworkChanged: (AndroidEvent.NetworkAvailabilityChanged) -> Unit = { cloudConnectivityVersion.value++ }
             val onCloudSaveSynced: (AndroidEvent.CloudSaveSynced) -> Unit = { event ->
@@ -302,7 +304,7 @@ class EpicAppScreen : BaseAppScreen() {
         }
 
         LaunchedEffect(gameId, cloudConnectivityVersion.value, hasCloudSaves) {
-            if (hasCloudSaves == true) {
+            if (hasCloudSaves) {
                 cloudSaveStatus.value = CloudSaveStatus.CHECKING
                 syncStateText.value = context.getString(R.string.cloud_saves_checking)
                 val epicGame = withContext(Dispatchers.IO) { EpicService.getEpicGameOf(gameId) }
