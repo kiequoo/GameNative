@@ -296,6 +296,8 @@ class EpicAppScreen : BaseAppScreen() {
 
         LaunchedEffect(gameId, cloudConnectivityVersion.value, hasCloudSaves) {
             if (hasCloudSaves) {
+                cloudSaveStatus.value = CloudSaveStatus.CHECKING
+                syncStateText.value = context.getString(R.string.cloud_saves_checking)
                 val activePhase = withContext(Dispatchers.IO) { EpicCloudSavesManager.getActiveCloudSyncPhase(gameId) }
                 if (activePhase != null) {
                     cloudSaveStatus.value = if (activePhase) CloudSaveStatus.UPLOADING else CloudSaveStatus.DOWNLOADING
@@ -304,8 +306,6 @@ class EpicAppScreen : BaseAppScreen() {
                     )
                     return@LaunchedEffect
                 }
-                cloudSaveStatus.value = CloudSaveStatus.CHECKING
-                syncStateText.value = context.getString(R.string.cloud_saves_checking)
                 val epicGame = withContext(Dispatchers.IO) { EpicService.getEpicGameOf(gameId) }
                 val status = if (epicGame == null) {
                     CloudSaveStatus.OFFLINE
