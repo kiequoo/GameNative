@@ -2012,7 +2012,10 @@ class SteamService : Service(), IChallengeUrlChanged {
                 instance?.scope?.launch {
                     val svc = instance ?: return@launch
                     val appId = downloadInfo.gameId
-                    if (getAppInfoOf(appId)?.supportsCloudSaves == true) {
+                    if (
+                        getAppInfoOf(appId)?.supportsCloudSaves == true &&
+                        !ContainerUtils.isLocalSavesOnly(svc.applicationContext, "STEAM_$appId")
+                    ) {
                         launchForceSync(
                             context = svc.applicationContext,
                             appId = appId,
@@ -2233,7 +2236,7 @@ class SteamService : Service(), IChallengeUrlChanged {
                                                     "Signaling app launch:\n\tappId: %d\n\tclientId: %s\n\tosType: %s",
                                                     appId,
                                                     PrefManager.clientId,
-                                          onPhaseStarted          EOSType.AndroidUnknown,
+                                                    EOSType.AndroidUnknown,
                                                 )
 
                                                 val pendingRemoteOperations = steamCloud.signalAppLaunchIntent(
