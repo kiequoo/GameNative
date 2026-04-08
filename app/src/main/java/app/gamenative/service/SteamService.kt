@@ -2364,9 +2364,7 @@ class SteamService : Service(), IChallengeUrlChanged {
             }
 
             val result = forceSyncUserFiles(appId = appId, prefixToPath = prefixToPath, preferredSave = preferredSave).await()
-            if (result.syncResult == SyncResult.InProgress) {
-                markCloudSyncFinished(appId, false)
-            }
+            if (result.syncResult == SyncResult.InProgress) return
         }
 
         /**
