@@ -2202,9 +2202,8 @@ class SteamService : Service(), IChallengeUrlChanged {
             // Migrate GSE Saves to Steam userdata
             SteamUtils.migrateGSESavesToSteamUserdata(instance?.applicationContext!!, appId)
 
+            var syncResult = PostSyncInfo(SyncResult.UnknownFail)
             try {
-                var syncResult = PostSyncInfo(SyncResult.UnknownFail)
-
                 val maxAttempts = 3
                 for (attempt in 1..maxAttempts) {
                     try {
@@ -2221,18 +2220,20 @@ class SteamService : Service(), IChallengeUrlChanged {
                                             parentScope = parentScope,
                                             prefixToPath = prefixToPath,
                                             onProgress = onProgress,
+                                            onPhaseStarted = { isUploading ->
+                                                markCloudSyncStarted(appId, isUploading)
+                                            },
                                         ).await()
 
                                         postSyncInfo?.let { info ->
                                             syncResult = info
-                                            markCloudSyncFinished(appId, info.syncResult == SyncResult.Success || info.syncResult == SyncResult.UpToDate)
 
                                             if (info.syncResult == SyncResult.Success || info.syncResult == SyncResult.UpToDate) {
                                                 Timber.i(
                                                     "Signaling app launch:\n\tappId: %d\n\tclientId: %s\n\tosType: %s",
                                                     appId,
                                                     PrefManager.clientId,
-                                                    EOSType.AndroidUnknown,
+                                          onPhaseStarted          EOSType.AndroidUnknown,
                                                 )
 
                                                 val pendingRemoteOperations = steamCloud.signalAppLaunchIntent(
@@ -2272,11 +2273,11 @@ class SteamService : Service(), IChallengeUrlChanged {
                         }
                     }
                 }
-
-                return@async syncResult
             } finally {
+                markCloudSyncFinished(appId, syncResult.syncResult == SyncResult.Success || syncResult.syncResult == SyncResult.UpToDate)
                 releaseSync(appId)
             }
+            return@async syncResult
         }
 
         /**
@@ -2442,10 +2443,12 @@ class SteamService : Service(), IChallengeUrlChanged {
             } catch (e: Exception) {
                 Timber.e(e, "Force cloud sync failed unexpectedly for appId=$appId")
                 PostSyncInfo(SyncResult.UnknownFail)
+            }
+            try {
+                markCloudSyncFinished(appId, syncResult.syncResult == SyncResult.Success || syncResult.syncResult == SyncResult.UpToDate)
             } finally {
                 releaseSync(appId)
             }
-            markCloudSyncFinished(appId, syncResult.syncResult == SyncResult.Success || syncResult.syncResult == SyncResult.UpToDate)
             syncResult
         }
 
@@ -3721,6 +3724,8 @@ class SteamService : Service(), IChallengeUrlChanged {
 
     @Suppress("UNCHECKED_CAST")
     private fun onCloudAppStateChange(notification: ServiceMethodNotification<*>) {
+        // Job name format: "<ServiceName>.<MethodName>#1" — matches CloudClient.handleNotificationMsg
+        // in JavaSteam's generated CloudClient.kt (in.dragonbra.javasteam.rpc.service).
         if (notification.jobName != "CloudClient.NotifyAppStateChange#1") return
 
         val body = (notification as ServiceMethodNotification<CCloud_AppCloudStateChange_Notification.Builder>)
