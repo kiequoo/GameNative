@@ -25,9 +25,15 @@ class SteamUtilsColdClientIniTest {
         lines().first { it.startsWith("$key=") }.removePrefix("$key=")
 
     @Test
-    fun `ExeRunDir is exe directory when no workingDir`() {
+    fun `ExeRunDir is game root when no workingDir and exe is in subdirectory`() {
         val ini = generate(gameName = "New Star GP", executablePath = "release/NSGP.exe", workingDir = null)
-        assertEquals("steamapps\\common\\New Star GP\\release", ini.iniValue("ExeRunDir"))
+        assertEquals("steamapps\\common\\New Star GP", ini.iniValue("ExeRunDir"))
+    }
+
+    @Test
+    fun `ExeRunDir is game root when no workingDir and exe is at root`() {
+        val ini = generate(gameName = "Hollow Knight", executablePath = "hollow_knight.exe", workingDir = null)
+        assertEquals("steamapps\\common\\Hollow Knight", ini.iniValue("ExeRunDir"))
     }
 
     @Test
@@ -38,9 +44,9 @@ class SteamUtilsColdClientIniTest {
     }
 
     @Test
-    fun `ExeRunDir is exe directory when workingDir is empty string`() {
+    fun `ExeRunDir is game root when workingDir is empty string`() {
         val ini = generate(gameName = "New Star GP", executablePath = "release/NSGP.exe", workingDir = "")
-        assertEquals("steamapps\\common\\New Star GP\\release", ini.iniValue("ExeRunDir"))
+        assertEquals("steamapps\\common\\New Star GP", ini.iniValue("ExeRunDir"))
     }
 
 }

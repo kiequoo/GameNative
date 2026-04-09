@@ -344,8 +344,9 @@ object SteamUtils {
         workingDir: String?,
         isUnpackFiles: Boolean,
     ): String {
-        val exePath = "steamapps\\common\\$gameName\\${executablePath.replace("/", "\\")}"
-        val exeRunDir = if (workingDir.isNullOrEmpty()) exePath.substringBeforeLast("\\") else ""
+        val execRelative = executablePath.replace("/", "\\")
+        val exePath = "steamapps\\common\\$gameName\\$execRelative"
+        val exeRunDir = if (workingDir.isNullOrEmpty()) exePath.removeSuffix("\\$execRelative") else ""
 
         // Only include DllsToInjectFolder if unpackFiles is enabled
         val injectionSection = if (isUnpackFiles) {
