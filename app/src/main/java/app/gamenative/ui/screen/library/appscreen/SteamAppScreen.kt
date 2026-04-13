@@ -65,6 +65,7 @@ import app.gamenative.NetworkMonitor
 import com.google.android.play.core.splitcompat.SplitCompat
 import com.posthog.PostHog
 import com.winlator.container.ContainerData
+import com.winlator.container.ContainerManager
 import com.winlator.xenvironment.ImageFs
 import com.winlator.xenvironment.ImageFsInstaller
 import java.nio.file.Paths
