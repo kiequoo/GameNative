@@ -9,11 +9,12 @@ import app.gamenative.data.GOGCredentials
 import app.gamenative.data.GOGGame
 import app.gamenative.data.LaunchInfo
 import app.gamenative.data.LibraryItem
+import app.gamenative.enums.SaveLocation
+import app.gamenative.enums.SyncResult
 import app.gamenative.events.AndroidEvent
 import app.gamenative.PluviaApp
 import app.gamenative.ui.util.SnackbarManager
 import app.gamenative.service.NotificationHelper
-import app.gamenative.utils.ContainerUtils
 import dagger.hilt.android.AndroidEntryPoint
 import java.io.File
 import java.util.concurrent.ConcurrentHashMap
@@ -410,19 +411,28 @@ class GOGService : Service() {
 
         /**
          * Sync GOG cloud saves for a game
-         * @param context Android context
          * @param appId Game app ID (e.g., "gog_123456")
-         * @param preferredAction Preferred sync action: "download", "upload", or "none"
-         * @return true if sync succeeded, false otherwise
+         * @param preferredSave Preferred save location (Remote to force download, Local to force upload, None for auto)
+         * @return Sync result and any conflict metadata needed by the launch flow
          */
         suspend fun syncCloudSaves(
-            context: Context,
             appId: String,
-            preferredAction: String = "none",
-        ): Boolean = withContext(Dispatchers.IO) {
-            getInstance()?.gogManager?.syncCloudSaves(appId, preferredAction) ?: false
+            preferredSave: SaveLocation = SaveLocation.None,
+        ): PostSyncInfo = withContext(Dispatchers.IO) {
+            val serviceInstance = getInstance() ?: run {
+                Timber.tag("GOG").e("[Cloud Saves] Service instance not available for sync start")
+                return@withContext PostSyncInfo(SyncResult.UnknownFail)
+            }
+
+            serviceInstance.gogManager.syncCloudSaves(appId, preferredSave)
         }
     }
+
+    data class PostSyncInfo(
+        val syncResult: SyncResult,
+        val localTimestamp: Long = 0L,
+        val remoteTimestamp: Long = 0L,
+    )
 
     private lateinit var notificationHelper: NotificationHelper
 

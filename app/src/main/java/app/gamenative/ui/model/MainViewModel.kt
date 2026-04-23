@@ -545,12 +545,11 @@ class MainViewModel @Inject constructor(
             viewModelScope.launch(Dispatchers.IO) {
                 try {
                     Timber.tag("GOG").d("[Cloud Saves] Starting post-game upload sync for $appId")
-                    val syncSuccess = app.gamenative.service.gog.GOGService.syncCloudSaves(
-                        context = context,
+                    val syncResult = app.gamenative.service.gog.GOGService.syncCloudSaves(
                         appId = appId,
-                        preferredAction = "upload",
+                        preferredSave = app.gamenative.enums.SaveLocation.Local,
                     )
-                    if (syncSuccess) {
+                    if (syncResult.syncResult == app.gamenative.enums.SyncResult.Success) {
                         Timber.tag("GOG").i("[Cloud Saves] Upload sync completed successfully for $appId")
                     } else {
                         Timber.tag("GOG").w("[Cloud Saves] Upload sync failed for $appId")

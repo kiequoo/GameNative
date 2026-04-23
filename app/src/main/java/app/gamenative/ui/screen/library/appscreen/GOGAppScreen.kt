@@ -18,6 +18,8 @@ import app.gamenative.R
 import app.gamenative.data.GOGGame
 import app.gamenative.data.LibraryItem
 import app.gamenative.enums.Marker
+import app.gamenative.enums.SaveLocation
+import app.gamenative.enums.SyncResult
 import app.gamenative.service.DownloadService
 import app.gamenative.service.gog.GOGConstants
 import app.gamenative.service.gog.GOGService
@@ -86,12 +88,11 @@ class GOGAppScreen : BaseAppScreen() {
         internal suspend fun forceCloudSync(
             context: Context,
             appId: String,
-            syncCloudSaves: suspend (Context, String, String) -> Boolean = { syncContext, syncAppId, preferredAction ->
+            syncCloudSaves: suspend (String, SaveLocation) -> SyncResult = { syncAppId, preferredSave ->
                 GOGService.syncCloudSaves(
-                    context = syncContext,
                     appId = syncAppId,
-                    preferredAction = preferredAction,
-                )
+                    preferredSave = preferredSave,
+                ).syncResult
             },
             showSnackbar: (String) -> Unit = SnackbarManager::show,
             logError: (Throwable) -> Unit = { error ->
@@ -102,10 +103,10 @@ class GOGAppScreen : BaseAppScreen() {
                 showSnackbar(context.getString(R.string.library_cloud_sync_starting))
 
                 val result = withContext(Dispatchers.IO) {
-                    syncCloudSaves(context, appId, "auto")
+                    syncCloudSaves(appId, SaveLocation.None)
                 }
 
-                if (result) {
+                if (result == SyncResult.Success) {
                     showSnackbar(context.getString(R.string.library_cloud_sync_success))
                 } else {
                     showSnackbar(context.getString(R.string.library_cloud_sync_failed))

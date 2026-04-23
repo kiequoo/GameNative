@@ -2,6 +2,8 @@ package app.gamenative.ui.screen.library.appscreen
 
 import android.content.Context
 import app.gamenative.R
+import app.gamenative.enums.SaveLocation
+import app.gamenative.enums.SyncResult
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -17,21 +19,21 @@ class GOGAppScreenTest {
         val context = mockContext()
         val messages = mutableListOf<String>()
         var calledAppId: String? = null
-        var calledPreferredAction: String? = null
+        var calledPreferredSave: SaveLocation? = null
 
         GOGAppScreen.forceCloudSync(
             context = context,
             appId = "app-123",
-            syncCloudSaves = { _, appId, preferredAction ->
+            syncCloudSaves = { appId, preferredSave ->
                 calledAppId = appId
-                calledPreferredAction = preferredAction
-                true
+                calledPreferredSave = preferredSave
+                SyncResult.Success
             },
             showSnackbar = { messages += it },
         )
 
         assertEquals("app-123", calledAppId)
-        assertEquals("auto", calledPreferredAction)
+        assertEquals(SaveLocation.None, calledPreferredSave)
         assertEquals(listOf("starting", "success"), messages)
     }
 
@@ -43,7 +45,7 @@ class GOGAppScreenTest {
         GOGAppScreen.forceCloudSync(
             context = context,
             appId = "app-123",
-            syncCloudSaves = { _, _, _ -> false },
+            syncCloudSaves = { _, _ -> SyncResult.UnknownFail },
             showSnackbar = { messages += it },
         )
 
@@ -59,7 +61,7 @@ class GOGAppScreenTest {
         GOGAppScreen.forceCloudSync(
             context = context,
             appId = "app-123",
-            syncCloudSaves = { _, _, _ -> throw IllegalStateException("boom") },
+            syncCloudSaves = { _, _ -> throw IllegalStateException("boom") },
             showSnackbar = { messages += it },
             logError = { loggedError = it },
         )

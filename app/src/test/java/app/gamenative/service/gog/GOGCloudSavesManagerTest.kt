@@ -133,6 +133,8 @@ class GOGCloudSavesManagerTest {
         assertTrue(deleted)
     }
 
+    // --- gzipCompress ---
+
     @Test
     fun gzipCompress_produces_valid_gzip_magic_bytes() {
         val result = GOGCloudSavesManager.gzipCompress("hello".toByteArray())
@@ -145,6 +147,7 @@ class GOGCloudSavesManagerTest {
     fun gzipCompress_mtime_field_is_zero() {
         val result = GOGCloudSavesManager.gzipCompress("hello".toByteArray())
 
+        // MTIME occupies bytes 4-7
         assertEquals(0.toByte(), result[4])
         assertEquals(0.toByte(), result[5])
         assertEquals(0.toByte(), result[6])
@@ -179,16 +182,19 @@ class GOGCloudSavesManagerTest {
         assertTrue(original.contentEquals(decompressed))
     }
 
+    // --- stale file deletion during DOWNLOAD ---
+
     @Test
     fun download_action_deletes_stale_local_file_not_present_in_cloud() {
         val root = Files.createTempDirectory("gog-download-stale").toFile()
         val staleFile = File(root, "stale.sav").apply { writeText("old") }
 
+        // notExistingRemotely = files that are local but not in cloud → should be deleted
         val notExistingRemotely = listOf(
             GOGCloudSavesManager.SyncFile(
                 relativePath = "stale.sav",
                 absolutePath = staleFile.absolutePath,
-            ),
+            )
         )
         notExistingRemotely.forEach { File(it.absolutePath).delete() }
 

@@ -11,6 +11,8 @@ import app.gamenative.data.LibraryItem
 import app.gamenative.db.dao.GOGGameDao
 import app.gamenative.enums.Marker
 import app.gamenative.enums.PathType
+import app.gamenative.enums.SaveLocation
+import app.gamenative.enums.SyncResult
 import app.gamenative.utils.ContainerUtils
 import app.gamenative.utils.FileUtils
 import app.gamenative.utils.MarkerUtils
@@ -24,6 +26,8 @@ import java.io.File
 import java.util.concurrent.ConcurrentHashMap
 import javax.inject.Inject
 import javax.inject.Singleton
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
@@ -74,8 +78,9 @@ class GOGManager @Inject constructor(
     private val syncTimestamps = ConcurrentHashMap<String, String>()
     private val timestampFile = File(context.filesDir, "gog_sync_timestamps.json")
 
-    // Track active sync operations to prevent concurrent syncs
-    private val activeSyncs = ConcurrentHashMap.newKeySet<String>()
+    // Track active sync operations. Maps appId -> deferred result so concurrent callers can await
+    // the outcome rather than starting a duplicate sync.
+    private val activeSyncs = ConcurrentHashMap<String, CompletableDeferred<Boolean>>()
 
     init {
         // Load persisted cloudsave timestamps on initialization
@@ -1046,16 +1051,14 @@ class GOGManager @Inject constructor(
      * Get resolved save directory paths for a game
      * @param context Android context
      * @param appId Game app ID
-     * @param gameTitle Game title (for fallback)
      * @return List of resolved save locations, or null if cloud saves not available
      */
     suspend fun getSaveDirectoryPath(
         context: Context,
         appId: String,
-        gameTitle: String,
     ): List<GOGCloudSavesLocation>? = withContext(Dispatchers.IO) {
         try {
-            Timber.tag("GOG").d("[Cloud Saves] Getting save directory path for $appId ($gameTitle)")
+            Timber.tag("GOG").d("[Cloud Saves] Getting save directory path for $appId")
             val gameId = ContainerUtils.extractGameIdFromContainerId(appId)
             val game = getGameFromDbById(gameId.toString())
 
@@ -1144,30 +1147,40 @@ class GOGManager @Inject constructor(
 
     suspend fun syncCloudSaves(
         appId: String,
-        preferredAction: String = "none",
-    ): Boolean = withContext(Dispatchers.IO) {
-        Timber.tag("GOG").d("[Cloud Saves] syncCloudSaves called for $appId with action: $preferredAction")
+        preferredSave: SaveLocation,
+    ): GOGService.PostSyncInfo = withContext(Dispatchers.IO) {
+        Timber.tag("GOG").d("[Cloud Saves] syncCloudSaves called for $appId with preferred save: $preferredSave")
 
-        if (!startSync(appId)) {
-            Timber.tag("GOG").w("[Cloud Saves] Sync already in progress for $appId, skipping duplicate sync")
-            return@withContext false
+        val existingDeferred = startSync(appId)
+        if (existingDeferred != null) {
+            Timber.tag("GOG").w("[Cloud Saves] Sync already in progress for $appId, returning InProgress")
+            return@withContext GOGService.PostSyncInfo(SyncResult.InProgress)
         }
 
         try {
-            performCloudSaveSync(appId, preferredAction)
+            performCloudSaveSync(appId, preferredSave)
+        } catch (e: CancellationException) {
+            endSync(appId, false)
+            Timber.tag("GOG").d("[Cloud Saves] Sync cancelled and lock released for $appId")
+            throw e
         } catch (e: Exception) {
             Timber.tag("GOG").e(e, "[Cloud Saves] Failed to sync cloud saves for App ID: $appId")
-            return@withContext false
-        } finally {
-            endSync(appId)
+            endSync(appId, false)
             Timber.tag("GOG").d("[Cloud Saves] Sync completed and lock released for $appId")
+            GOGService.PostSyncInfo(SyncResult.UnknownFail)
         }
     }
 
-    private suspend fun performCloudSaveSync(appId: String, preferredAction: String): Boolean {
+    private data class LocationSyncResult(
+        val name: String,
+        val outcome: GOGCloudSavesManager.SyncOutcome,
+    )
+
+    private suspend fun performCloudSaveSync(appId: String, preferredSave: SaveLocation): GOGService.PostSyncInfo {
         if (!GOGAuthManager.hasStoredCredentials(context)) {
             Timber.tag("GOG").e("[Cloud Saves] Cannot sync saves: not authenticated")
-            return false
+            endSync(appId, false)
+            return GOGService.PostSyncInfo(SyncResult.UnknownFail)
         }
 
         val authConfigPath = GOGAuthManager.getAuthConfigPath(context)
@@ -1179,37 +1192,65 @@ class GOGManager @Inject constructor(
 
         if (game == null) {
             Timber.tag("GOG").e("[Cloud Saves] Game not found for appId: $appId")
-            return false
+            endSync(appId, false)
+            return GOGService.PostSyncInfo(SyncResult.UnknownFail)
         }
         Timber.tag("GOG").d("[Cloud Saves] Found game: ${game.title}")
 
         Timber.tag("GOG").d("[Cloud Saves] Resolving save directory paths for $appId")
-        val saveLocations = getSaveDirectoryPath(context, appId, game.title)
+        val saveLocations = getSaveDirectoryPath(context, appId)
 
         if (saveLocations.isNullOrEmpty()) {
             Timber.tag("GOG").w("[Cloud Saves] No save locations found for game $appId (cloud saves may not be enabled)")
-            return false
+            endSync(appId, false)
+            return GOGService.PostSyncInfo(SyncResult.UnknownFail)
         }
         Timber.tag("GOG").i("[Cloud Saves] Found ${saveLocations.size} save location(s) for $appId")
 
-        val syncResults = saveLocations.mapIndexedNotNull { index, location ->
+        val syncResults = saveLocations.mapIndexed { index, location ->
             syncSaveLocation(
                 appId = appId,
                 gameId = gameId,
                 location = location,
                 locationIndex = index,
                 locationCount = saveLocations.size,
-                preferredAction = preferredAction,
+                preferredSave = preferredSave,
             )
         }
 
-        val success = syncResults.all { it }
+        val firstFailure = syncResults.firstOrNull { it.outcome.failed }
+        if (firstFailure != null) {
+            Timber.tag("GOG").w("[Cloud Saves] Sync failed at location '${firstFailure.name}' for $appId")
+            endSync(appId, false)
+            Timber.tag("GOG").d("[Cloud Saves] Sync completed and lock released for $appId")
+            return GOGService.PostSyncInfo(SyncResult.UnknownFail)
+        }
+
+        val conflicts = syncResults
+            .map { it.outcome }
+            .filter { it.action == GOGCloudSavesManager.SyncAction.CONFLICT }
+        if (conflicts.isNotEmpty()) {
+            val bestConflict = conflicts.maxByOrNull { kotlin.math.abs(it.localTimestampMs - it.remoteTimestampMs) }
+            endSync(appId, false)
+            Timber.tag("GOG").d("[Cloud Saves] Conflict detected and lock released for $appId")
+            return GOGService.PostSyncInfo(
+                syncResult = SyncResult.Conflict,
+                localTimestamp = bestConflict?.localTimestampMs ?: 0L,
+                remoteTimestamp = bestConflict?.remoteTimestampMs ?: 0L,
+            )
+        }
+
+        val success = syncResults.all { it.outcome.newTimestamp > 0L }
         if (success) {
             Timber.tag("GOG").i("[Cloud Saves] All save locations synced successfully for $appId")
         } else {
             Timber.tag("GOG").w("[Cloud Saves] Some save locations failed to sync for $appId")
         }
-        return success
+
+        val result = if (success) SyncResult.Success else SyncResult.UnknownFail
+        endSync(appId, result == SyncResult.Success)
+        Timber.tag("GOG").d("[Cloud Saves] Sync completed and lock released for $appId")
+        return GOGService.PostSyncInfo(result)
     }
 
     private suspend fun syncSaveLocation(
@@ -1218,8 +1259,8 @@ class GOGManager @Inject constructor(
         location: GOGCloudSavesLocation,
         locationIndex: Int,
         locationCount: Int,
-        preferredAction: String,
-    ): Boolean? {
+        preferredSave: SaveLocation,
+    ): LocationSyncResult {
         try {
             Timber.tag("GOG").d("[Cloud Saves] Processing location ${locationIndex + 1}/$locationCount: '${location.name}'")
             logDirectoryStateBeforeSync(location.location, location.name)
@@ -1227,36 +1268,88 @@ class GOGManager @Inject constructor(
             val timestampStr = getCloudSaveSyncTimestamp(appId, location.name)
             val timestamp = timestampStr.toLongOrNull() ?: 0L
 
-            Timber.tag("GOG").i("[Cloud Saves] Syncing '${location.name}' for game $gameId (clientId: ${location.clientId}, path: ${location.location}, timestamp: $timestamp, action: $preferredAction)")
+            Timber.tag("GOG").i("[Cloud Saves] Syncing '${location.name}' for game $gameId (clientId: ${location.clientId}, path: ${location.location}, timestamp: $timestamp, preferred save: $preferredSave)")
 
             if (location.clientSecret.isEmpty()) {
                 Timber.tag("GOG").e("[Cloud Saves] Missing clientSecret for '${location.name}', skipping sync")
-                return null
+                return LocationSyncResult(
+                    name = location.name,
+                    outcome = GOGCloudSavesManager.SyncOutcome(
+                        action = GOGCloudSavesManager.SyncAction.NONE,
+                        failed = true,
+                    ),
+                )
             }
 
-            val newTimestamp = cloudSavesManager.syncSaves(
+            val effectivePreferredSave = getEffectivePreferredSaveForLocation(
+                location = location,
+                appId = appId,
+                preferredSave = preferredSave,
+                lastSyncTimestamp = timestamp,
+            )
+
+            val outcome = cloudSavesManager.syncSaves(
                 clientId = location.clientId,
                 clientSecret = location.clientSecret,
                 localPath = location.location,
                 dirname = location.name,
                 lastSyncTimestamp = timestamp,
-                preferredAction = preferredAction,
+                preferredSave = effectivePreferredSave,
             )
 
-            if (newTimestamp > 0) {
-                setCloudSaveSyncTimestamp(appId, location.name, newTimestamp.toString())
-                Timber.tag("GOG").d("[Cloud Saves] Updated timestamp for '${location.name}': $newTimestamp")
-                logDirectoryStateAfterSync(location.location, location.name, preferredAction)
+            if (outcome.newTimestamp > 0) {
+                setCloudSaveSyncTimestamp(appId, location.name, outcome.newTimestamp.toString())
+                Timber.tag("GOG").d("[Cloud Saves] Updated timestamp for '${location.name}': ${outcome.newTimestamp}")
+                logDirectoryStateAfterSync(location.location, location.name, effectivePreferredSave)
                 Timber.tag("GOG").i("[Cloud Saves] Successfully synced save location '${location.name}' for game $gameId")
-                return true
+                return LocationSyncResult(name = location.name, outcome = outcome)
             }
 
-            Timber.tag("GOG").e("[Cloud Saves] Failed to sync save location '${location.name}' for game $gameId (timestamp: $newTimestamp)")
-            return false
+            if (outcome.action == GOGCloudSavesManager.SyncAction.CONFLICT) {
+                Timber.tag("GOG").w("[Cloud Saves] Conflict detected for '${location.name}' in game $gameId")
+                return LocationSyncResult(name = location.name, outcome = outcome)
+            }
+
+            Timber.tag("GOG").e("[Cloud Saves] Failed to sync save location '${location.name}' for game $gameId")
+            return LocationSyncResult(name = location.name, outcome = outcome.copy(failed = true))
         } catch (e: Exception) {
             Timber.tag("GOG").e(e, "[Cloud Saves] Exception syncing save location '${location.name}' for game $gameId")
-            return false
+            return LocationSyncResult(
+                name = location.name,
+                outcome = GOGCloudSavesManager.SyncOutcome(
+                    action = GOGCloudSavesManager.SyncAction.NONE,
+                    failed = true,
+                ),
+            )
         }
+    }
+
+    private suspend fun getEffectivePreferredSaveForLocation(
+        location: GOGCloudSavesLocation,
+        appId: String,
+        preferredSave: SaveLocation,
+        lastSyncTimestamp: Long,
+    ): SaveLocation {
+        if (preferredSave == SaveLocation.None) return SaveLocation.None
+
+        val syncCheck = cloudSavesManager.checkSync(
+            clientId = location.clientId,
+            clientSecret = location.clientSecret,
+            localPath = location.location,
+            dirname = location.name,
+            lastSyncTimestamp = lastSyncTimestamp,
+        )
+
+        val effective = if (syncCheck?.action == GOGCloudSavesManager.SyncAction.CONFLICT) {
+            preferredSave
+        } else {
+            SaveLocation.None
+        }
+
+        Timber.tag("GOG").d(
+            "[Cloud Saves] Effective preferred save for '${location.name}' on $appId: $effective (requested=$preferredSave, action=${syncCheck?.action})",
+        )
+        return effective
     }
 
     private fun logDirectoryStateBeforeSync(locationPath: String, locationName: String) {
@@ -1286,7 +1379,7 @@ class GOGManager @Inject constructor(
     private fun logDirectoryStateAfterSync(
         locationPath: String,
         locationName: String,
-        preferredAction: String,
+        preferredSave: SaveLocation,
     ) {
         try {
             val saveDir = File(locationPath)
@@ -1294,17 +1387,17 @@ class GOGManager @Inject constructor(
                 val files = saveDir.listFiles()
                 if (files != null && files.isNotEmpty()) {
                     val fileList = files.joinToString(", ") { it.name }
-                    Timber.tag("GOG").i("[Cloud Saves] [$preferredAction] Files in '$locationName': $fileList (${files.size} files)")
+                    Timber.tag("GOG").i("[Cloud Saves] [$preferredSave] Files in '$locationName': $fileList (${files.size} files)")
 
                     files.forEach { file ->
                         val size = if (file.isFile) "${file.length()} bytes" else "directory"
-                        Timber.tag("GOG").d("[Cloud Saves] [$preferredAction]   - ${file.name} ($size)")
+                        Timber.tag("GOG").d("[Cloud Saves] [$preferredSave]   - ${file.name} ($size)")
                     }
                 } else {
-                    Timber.tag("GOG").w("[Cloud Saves] [$preferredAction] Directory '$locationName' is empty at: $locationPath")
+                    Timber.tag("GOG").w("[Cloud Saves] [$preferredSave] Directory '$locationName' is empty at: $locationPath")
                 }
             } else {
-                Timber.tag("GOG").w("[Cloud Saves] [$preferredAction] Directory not found: $locationPath")
+                Timber.tag("GOG").w("[Cloud Saves] [$preferredSave] Directory not found: $locationPath")
             }
         } catch (e: Exception) {
             Timber.tag("GOG").e(e, "[Cloud Saves] Failed to list files in directory: $locationPath")
@@ -1338,19 +1431,19 @@ class GOGManager @Inject constructor(
 
     /**
      * Start a sync operation for a game (prevents concurrent syncs)
-     * @param appId Game app ID
-     * @return true if sync can proceed, false if one is already in progress
+     * Returns null if the sync lock was acquired; otherwise returns the in-flight deferred so
+     * callers can avoid starting a duplicate sync.
      */
-    fun startSync(appId: String): Boolean {
-        return activeSyncs.add(appId)
+    fun startSync(appId: String): CompletableDeferred<Boolean>? {
+        val newDeferred = CompletableDeferred<Boolean>()
+        return activeSyncs.putIfAbsent(appId, newDeferred)
     }
 
     /**
-     * End a sync operation for a game
-     * @param appId Game app ID
+     * Release the sync lock for [appId] and propagate [success] to any waiting callers.
      */
-    fun endSync(appId: String) {
-        activeSyncs.remove(appId)
+    fun endSync(appId: String, success: Boolean) {
+        activeSyncs.remove(appId)?.complete(success)
     }
 
     /**
